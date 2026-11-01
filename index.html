@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Design Adaptatif · Koï</title>
+<meta name="description" content="Exercice créatif 01 : deux koïs en WebGL nagent autour du titre et laissent des ondes dans l'eau.">
+<meta property="og:title" content="Design Adaptatif · Koï">
+<meta property="og:description" content="Exercice créatif 01 : deux koïs en WebGL autour du titre.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Roboto+Condensed:wght@400&display=swap">
+<style>
+/* Plein écran, une seule scène : fond rouge, titre jaune, deux koïs. Un seul monde visuel, donc un seul thème. */
+@font-face{ font-family:"BROKEN"; src:url("assets/broken.otf") format("opentype"); font-display:block }
+:root{
+  --rouge:#C93033;     /* fond de l'étang */
+  --jaune:#FFC567;     /* titre */
+  --blanc:#FFFFFF;     /* textes de coin */
+  --display:"BROKEN", "Didot", Georgia, serif;
+  --ui:"Roboto Condensed", "Arial Narrow", Arial, sans-serif;
+  color-scheme:light;
+}
+*{ box-sizing:border-box }
+html, body{ height:100%; margin:0 }
+body{ background:var(--rouge); color:var(--blanc); overflow:hidden; -webkit-font-smoothing:antialiased }
+.hero{ position:relative; width:100%; height:100%; min-height:100svh; overflow:hidden; background:var(--rouge) }
+
+/* Version HTML : visible si WebGL n'est pas disponible ou en mouvement réduit sans WebGL */
+.static h1{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); margin:0; text-align:center; white-space:nowrap;
+  font:400 var(--fs, 200px)/1.08 var(--display); color:var(--jaune) }
+.static img{ position:absolute; pointer-events:none }
+.static .k1{ width:calc(var(--s) * 412px); left:calc(50% + var(--s) * 199px); top:calc(50% - var(--s) * 338px) }
+.static .k2{ width:calc(var(--s) * 280px); left:calc(50% - var(--s) * 600px); top:calc(50% + var(--s) * 135px); transform:rotate(111deg) }
+.gl .static{ visibility:hidden }
+.gl .static h1{ visibility:visible; color:transparent }   /* le titre reste lisible par les lecteurs d'écran et sélectionnable */
+canvas{ position:absolute; inset:0; width:100%; height:100%; display:block }
+
+/* Textes de coin, au-dessus de l'eau */
+.corner{ position:absolute; z-index:3; margin:0; font:400 clamp(14px, 1.4vw, 20px)/1.2 var(--ui); color:var(--blanc); white-space:nowrap }
+.tl{ left:max(clamp(16px, 2.8vw, 40px), env(safe-area-inset-left, 0px)); top:calc(clamp(24px, 7.9vh, 81px) + env(safe-area-inset-top, 0px)) }
+.tr{ right:max(clamp(16px, 2.8vw, 40px), env(safe-area-inset-right, 0px)); top:calc(clamp(24px, 7.9vh, 81px) + env(safe-area-inset-top, 0px)); text-align:right }
+.bl{ left:max(clamp(16px, 2.8vw, 40px), env(safe-area-inset-left, 0px)); bottom:calc(clamp(24px, 9.2vh, 95px) + env(safe-area-inset-bottom, 0px)) }
+.br{ right:max(clamp(16px, 2.8vw, 40px), env(safe-area-inset-right, 0px)); bottom:calc(clamp(24px, 9.2vh, 95px) + env(safe-area-inset-bottom, 0px)); text-align:right }
+.corner a{ color:inherit; text-decoration:none }
+.corner a:hover{ text-decoration:underline; text-underline-offset:3px }
+:focus-visible{ outline:2px solid var(--jaune); outline-offset:3px }
+</style>
+</head>
+<body>
+<main class="hero" id="hero">
+  <div class="static" aria-hidden="false">
+    <h1 id="title">Design<br>Adaptatif</h1>
+    <img class="k1" src="assets/koi-white.webp" alt="" width="1024" height="1220">
+    <img class="k2" src="assets/koi-orange.webp" alt="" width="640" height="640">
+  </div>
+  <canvas id="pond" aria-hidden="true"></canvas>
+  <p class="corner tl">Nicolas Latreille</p>
+  <p class="corner tr">Exercice créatif / 01</p>
+  <p class="corner bl"><a href="https://nicolaslatreille.ca">nicolaslatreille.ca</a></p>
+  <p class="corner br">Novembre 2026</p>
+</main>
+
+<script>
+(() => {
+  const hero = document.getElementById('hero');
+  const canvas = document.getElementById('pond');
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const DESIGN_W = 1440, DESIGN_H = 1024;
+
+  // Échelles : le titre prend la largeur disponible, les poissons restent assez grands sur mobile
+  let W = 0, H = 0, DPR = 1, sText = 1, sFish = 1;
+  function measure(){
+    W = hero.clientWidth; H = hero.clientHeight;
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    sText = Math.min((W - 32) / 860, H / DESIGN_H, 1.35);
+    sFish = Math.max(Math.min(W / DESIGN_W, H / DESIGN_H), 0.42);
+    hero.style.setProperty('--fs', (200 * sText) + 'px');
+    hero.style.setProperty('--s', sFish);
+  }
+  measure();
+
+  const gl = canvas.getContext('webgl2', { alpha:false, antialias:true, premultipliedAlpha:false });
+  if (!gl) return;                       // pas de WebGL 2 : la version HTML reste affichée
+  document.documentElement.classList.add('gl');
+
+  /* ---------- Outils WebGL ---------- */
+  function shader(type, src){
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  function program(vs, fs){
+    const p = gl.createProgram();
+    gl.attachShader(p, shader(gl.VERTEX_SHADER, vs)); gl.attachShader(p, shader(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    return p;
+  }
+  function texture(source, mip){
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    if (mip){ gl.generateMipmap(gl.TEXTURE_2D); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); }
+    else gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    return t;
+  }
+
+  /* ---------- 1. La surface de l'eau : fond + titre, déformés par les ondes ---------- */
+  const MAX_DROPS = 56;
+  const waterProg = program(`#version 300 es
+    in vec2 aPos; void main(){ gl_Position = vec4(aPos, 0., 1.); }`,
+  `#version 300 es
+    precision highp float;
+    uniform sampler2D uScene; uniform vec2 uRes; uniform float uTime, uScale, uDpr;
+    uniform vec4 uDrops[${MAX_DROPS}];          // x, y (px CSS), naissance (s), amplitude
+    out vec4 o;
+    const float SPEED = 95.0, LIFE = 3.6, DECAY = 1.05, WAVE = 26.0;
+    void main(){
+      vec2 p = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y) / uDpr;    // pixels CSS, y vers le bas
+      float k = 6.2831853 / (WAVE * uScale);
+      vec2 grad = vec2(0.); float h = 0.;
+      for (int i = 0; i < ${MAX_DROPS}; i++){
+        vec4 d = uDrops[i];
+        float age = uTime - d.z;
+        if (d.w <= 0. || age < 0. || age > LIFE) continue;
+        vec2 dv = p - d.xy; float r = length(dv);
+        float front = age * SPEED * uScale;
+        float w = (18.0 + age * 22.0) * uScale;              // l'anneau s'élargit en vieillissant
+        float x = r - front;
+        if (abs(x) > 3.0 * w) continue;                     // la plupart des pixels sortent ici : rapide
+        float env = exp(-x * x / (w * w)) * exp(-age * DECAY) * d.w * smoothstep(0., 0.35, age);
+        float s = sin(x * k), c = cos(x * k);
+        h += s * env;
+        float dh = (c * k - 2.0 * x / (w * w) * s) * env;   // dérivée radiale de la hauteur
+        grad += (r > 0.001 ? dv / r : vec2(0.)) * dh;
+      }
+      vec2 offset = grad * 14.0 * uScale;                    // réfraction : on lit la scène un peu à côté
+      vec2 uv = (p + offset) / (uRes / uDpr);
+      vec3 col = texture(uScene, uv).rgb;
+      // reflets très légers sur les crêtes, ombres douces dans les creux : une onde transparente
+      float light = clamp(dot(normalize(vec3(-grad * 3.0, 1.0)), normalize(vec3(-0.4, -0.6, 0.7))), 0., 1.);
+      col += (light - 0.72) * 0.16 * min(length(grad) * 5.0, 1.0);
+      col += h * 0.035;
+      o = vec4(col, 1.);
+    }`);
+  const quad = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+  const waterVao = gl.createVertexArray(); gl.bindVertexArray(waterVao);
+  const wPos = gl.getAttribLocation(waterProg, 'aPos'); gl.enableVertexAttribArray(wPos); gl.vertexAttribPointer(wPos, 2, gl.FLOAT, false, 0, 0);
+  const WU = n => gl.getUniformLocation(waterProg, n);
+  const uScene = WU('uScene'), uRes = WU('uRes'), uTime = WU('uTime'), uScaleW = WU('uScale'), uDprW = WU('uDpr'), uDrops = WU('uDrops');
+
+  // La scène (fond + titre) est dessinée une fois dans un canvas 2D, puis envoyée comme texture
+  const sceneCanvas = document.createElement('canvas');
+  let sceneTex = null;
+  function drawScene(){
+    sceneCanvas.width = Math.round(W * DPR); sceneCanvas.height = Math.round(H * DPR);
+    const c = sceneCanvas.getContext('2d'); c.setTransform(DPR, 0, 0, DPR, 0, 0);
+    c.fillStyle = '#C93033'; c.fillRect(0, 0, W, H);
+    const fs = 200 * sText;
+    c.fillStyle = '#FFC567'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.font = `400 ${fs}px BROKEN, Georgia, serif`;
+    c.fillText('Design', W / 2, H / 2 - fs * 0.54);
+    c.fillText('Adaptatif', W / 2, H / 2 + fs * 0.54);
+    if (sceneTex) gl.deleteTexture(sceneTex);
+    sceneTex = texture(sceneCanvas, false);
+  }
+
+  /* ---------- 2. Les koïs : un maillage qui suit la colonne vertébrale ---------- */
+  const fishProg = program(`#version 300 es
+    in vec2 aPos; in vec2 aUv; uniform vec2 uView, uOffset;
+    out vec2 vUv;
+    void main(){ vUv = aUv; vec2 p = aPos + uOffset; gl_Position = vec4(p.x / uView.x * 2. - 1., 1. - p.y / uView.y * 2., 0., 1.); }`,
+  `#version 300 es
+    precision highp float;
+    uniform sampler2D uTex; uniform float uShadow;
+    in vec2 vUv; out vec4 o;
+    void main(){
+      if (uShadow > 0.5){ float a = textureLod(uTex, vUv, 4.5).a; o = vec4(0.32, 0.03, 0.05, a * 0.28); return; }  // ombre floue sur le fond
+      o = texture(uTex, vUv);
+    }`);
+  const FU = n => gl.getUniformLocation(fishProg, n);
+  const uView = FU('uView'), uOffset = FU('uOffset'), uTex = FU('uTex'), uShadow = FU('uShadow');
+
+  // Colonne vertébrale mesurée sur chaque image (pixels de l'image, de la bouche à la queue)
+  const SPECIES = [
+    { src:'assets/koi-white.webp', w:1024, h:1220, half:250, scale:0.40,
+      spine:[[48,92],[150,150],[300,240],[450,322],[580,420],[690,520],[780,620],[840,730],[862,830],[872,930],[890,1050],[918,1150]] },
+    { src:'assets/koi-orange.webp', w:640, h:640, half:205, scale:0.44,
+      spine:[[172,598],[210,510],[260,430],[320,342],[380,270],[428,210],[460,160],[478,100],[482,18]] },
+  ];
+  const ROWS = 44, COLS = 9;
+
+  function resample(poly, n){      // n points répartis régulièrement le long de la courbe
+    const segs = []; let L = 0;
+    for (let i = 1; i < poly.length; i++){ const d = Math.hypot(poly[i][0]-poly[i-1][0], poly[i][1]-poly[i-1][1]); segs.push(d); L += d; }
+    const out = [];
+    for (let j = 0; j < n; j++){
+      let t = j / (n - 1) * L, i = 0;
+      while (i < segs.length - 1 && t > segs[i]){ t -= segs[i]; i++; }
+      const f = Math.min(t / segs[i], 1);
+      out.push([poly[i][0] + (poly[i+1][0]-poly[i][0]) * f, poly[i][1] + (poly[i+1][1]-poly[i][1]) * f]);
+    }
+    return { pts: out, len: L };
+  }
+  function normals(pts, span = 1){
+    return pts.map((p, j) => {
+      const a = pts[Math.max(j - span, 0)], b = pts[Math.min(j + span, pts.length - 1)];
+      const tx = b[0] - a[0], ty = b[1] - a[1], l = Math.hypot(tx, ty) || 1;
+      return [-ty / l, tx / l];
+    });
+  }
+
+  const fish = SPECIES.map((sp, idx) => {
+    const { pts, len } = resample(sp.spine, ROWS);
+    const nrm = normals(pts);
+    // coordonnées de texture : fixes, elles « déplient » le poisson courbé de l'image
+    const uv = new Float32Array(ROWS * COLS * 2);
+    for (let j = 0; j < ROWS; j++) for (let i = 0; i < COLS; i++){
+      const u = i / (COLS - 1) * 2 - 1, k = (j * COLS + i) * 2;
+      uv[k] = (pts[j][0] + nrm[j][0] * u * sp.half) / sp.w;
+      uv[k + 1] = (pts[j][1] + nrm[j][1] * u * sp.half) / sp.h;
+    }
+    const idxs = [];
+    for (let j = 0; j < ROWS - 1; j++) for (let i = 0; i < COLS - 1; i++){
+      const a = j * COLS + i, b = a + 1, c = a + COLS, d = c + 1; idxs.push(a, c, b, b, c, d);
+    }
+    const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+    const posBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, ROWS * COLS * 8, gl.DYNAMIC_DRAW);
+    const aPos = gl.getAttribLocation(fishProg, 'aPos'); gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+    const uvBuf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf); gl.bufferData(gl.ARRAY_BUFFER, uv, gl.STATIC_DRAW);
+    const aUv = gl.getAttribLocation(fishProg, 'aUv'); gl.enableVertexAttribArray(aUv); gl.vertexAttribPointer(aUv, 2, gl.FLOAT, false, 0, 0);
+    const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idxs), gl.STATIC_DRAW);
+    return { sp, idx, texLen: len, vao, posBuf, count: idxs.length, tex: null, pos: new Float32Array(ROWS * COLS * 2),
+             trail: [], phase: idx * 1.7, theta: 0, last: null, emitT: 0, speed: 0 };
+  });
+
+  /* ---------- 3. Trajectoire : une orbite lâche autour du titre, jamais deux fois la même ---------- */
+  // Chaque koï a ses propres fréquences (non multiples) : le tracé dérive au lieu de boucler à l'identique
+  const PATHS = [
+    { theta0:-0.75, w:-0.155, rx:0.41, ry:0.40, a:[0.12,0.21,0.3], b:[0.08,0.53,1.9], c:[0.05,1.13,4.2], wob:[0.32,0.17,0.6, 0.14,0.41,2.2] },
+    { theta0: 2.35, w:-0.215, rx:0.35, ry:0.37, a:[0.15,0.17,1.1], b:[0.09,0.47,3.3], c:[0.06,0.97,0.4], wob:[0.30,0.23,2.8, 0.16,0.37,5.1] },
+  ];
+  function target(f, t){
+    const P = PATHS[f.idx];
+    const r = 1 + P.a[0] * Math.sin(P.a[1] * t + P.a[2]) + P.b[0] * Math.sin(P.b[1] * t + P.b[2]) + P.c[0] * Math.sin(P.c[1] * t + P.c[2]);
+    const cx = W / 2 + W * 0.025 * Math.sin(0.11 * t + f.idx * 2), cy = H / 2 + H * 0.03 * Math.sin(0.13 * t + 1 + f.idx);
+    return [cx + Math.cos(f.theta) * W * P.rx * r, cy + Math.sin(f.theta) * H * P.ry * r];
+  }
+  function angularSpeed(f, t){
+    const P = PATHS[f.idx], q = P.wob;
+    return P.w * (1 + q[0] * Math.sin(q[1] * t + q[2]) + q[3] * Math.sin(q[4] * t + q[5]));
+  }
+  function bodyLength(f){ return f.texLen * f.sp.scale * sFish; }
+
+  function resetFish(t){
+    fish.forEach(f => {
+      f.theta = PATHS[f.idx].theta0;
+      const h = target(f, t);
+      // traînée initiale droite, derrière la tête, dans le sens de la nage
+      const ahead = (() => { const th = f.theta; f.theta += angularSpeed(f, t) * 0.05; const p = target(f, t); f.theta = th; return p; })();
+      let dx = ahead[0] - h[0], dy = ahead[1] - h[1]; const l = Math.hypot(dx, dy) || 1; dx /= l; dy /= l;
+      const L = bodyLength(f) * 1.3;
+      f.trail = []; for (let d = L; d >= 0; d -= 4) f.trail.push([h[0] - dx * d, h[1] - dy * d]);
+      f.last = h;
+    });
+  }
+
+  // point à la distance d derrière la tête, en remontant la traînée
+  function along(trail, d){
+    let acc = 0;
+    for (let i = trail.length - 1; i > 0; i--){
+      const a = trail[i], b = trail[i - 1], seg = Math.hypot(a[0]-b[0], a[1]-b[1]);
+      if (acc + seg >= d){ const f = (d - acc) / (seg || 1); return [a[0] + (b[0]-a[0]) * f, a[1] + (b[1]-a[1]) * f]; }
+      acc += seg;
+    }
+    return trail[0];
+  }
+
+  /* ---------- 4. Les ondes : anneaux nés derrière chaque koï ---------- */
+  const drops = new Float32Array(MAX_DROPS * 4);
+  let dropSlot = 0;
+  function drop(x, y, t, amp){ const k = (dropSlot++ % MAX_DROPS) * 4; drops[k] = x; drops[k+1] = y; drops[k+2] = t; drops[k+3] = amp; }
+
+  function updateFish(f, t, dt){
+    f.theta += angularSpeed(f, t) * dt;
+    const h = target(f, t);
+    const v = Math.hypot(h[0] - f.last[0], h[1] - f.last[1]) / Math.max(dt, 1e-3);
+    f.speed += (v - f.speed) * Math.min(dt * 3, 1);
+    f.last = h;
+    const tl = f.trail[f.trail.length - 1];
+    if (Math.hypot(h[0] - tl[0], h[1] - tl[1]) > 2) f.trail.push(h); else f.trail[f.trail.length - 1] = h;
+    const maxPts = Math.ceil(bodyLength(f) * 1.4 / 2) + 10; if (f.trail.length > maxPts) f.trail.splice(0, f.trail.length - maxPts);
+    // la queue bat plus vite quand le koï accélère
+    const L = bodyLength(f);
+    f.phase += dt * (2.0 + Math.min(f.speed / L, 1.5) * 4.5);
+
+    let spine = []; for (let j = 0; j < ROWS; j++) spine.push(along(f.trail, j / (ROWS - 1) * L));
+    // deux passes de lissage : la colonne ne peut pas faire de pli, même si la traînée a un coude
+    for (let pass = 0; pass < 2; pass++) spine = spine.map((q, j) => (j === 0 || j === ROWS - 1) ? q :
+      [(spine[j-1][0] + 2 * q[0] + spine[j+1][0]) / 4, (spine[j-1][1] + 2 * q[1] + spine[j+1][1]) / 4]);
+    const nrm = normals(spine, 3);
+    const half = f.sp.half * f.sp.scale * sFish;
+    for (let j = 0; j < ROWS; j++){
+      const s = j / (ROWS - 1);
+      const wiggle = Math.sin(f.phase - s * 4.2) * Math.pow(s, 1.6) * L * 0.075;   // ondulation : tête stable, queue souple
+      const bx = spine[j][0] + nrm[j][0] * wiggle, by = spine[j][1] + nrm[j][1] * wiggle;
+      for (let i = 0; i < COLS; i++){
+        const u = i / (COLS - 1) * 2 - 1, k = (j * COLS + i) * 2;
+        f.pos[k] = bx + nrm[j][0] * u * half; f.pos[k + 1] = by + nrm[j][1] * u * half;
+      }
+    }
+    // une onde toutes les ~0,14 s, née derrière le corps
+    f.emitT -= dt;
+    if (f.emitT <= 0){
+      f.emitT = 0.14 + Math.random() * 0.06;
+      const p = along(f.trail, L * 0.72);
+      drop(p[0] + (Math.random() - .5) * 6, p[1] + (Math.random() - .5) * 6, t, 0.55 + Math.min(f.speed / 120, 1) * 0.45);
+    }
+  }
+
+  // le curseur dérange l'eau aussi
+  let lastPointer = 0;
+  hero.addEventListener('pointermove', e => {
+    if (reduce) return;
+    const now = performance.now() / 1000 - t0;
+    if (now - lastPointer < 0.09) return; lastPointer = now;
+    const r = hero.getBoundingClientRect(); drop(e.clientX - r.left, e.clientY - r.top, now, 0.5);
+  });
+
+  /* ---------- 5. Boucle de rendu ---------- */
+  function resize(){
+    measure();
+    canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    drawScene(); resetFish(clock);
+  }
+  function render(t){
+    gl.disable(gl.BLEND);
+    gl.useProgram(waterProg); gl.bindVertexArray(waterVao);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, sceneTex); gl.uniform1i(uScene, 0);
+    gl.uniform2f(uRes, canvas.width, canvas.height); gl.uniform1f(uTime, t); gl.uniform1f(uScaleW, sFish); gl.uniform1f(uDprW, DPR);
+    gl.uniform4fv(uDrops, drops);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+    gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(fishProg); gl.uniform2f(uView, W, H); gl.uniform1i(uTex, 0);
+    for (const pass of [1, 0]){                 // d'abord les ombres, puis les poissons
+      for (const f of fish){
+        if (!f.tex) continue;
+        gl.bindVertexArray(f.vao); gl.bindBuffer(gl.ARRAY_BUFFER, f.posBuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, f.pos);
+        gl.bindTexture(gl.TEXTURE_2D, f.tex);
+        gl.uniform1f(uShadow, pass);
+        const o = pass ? 14 * sFish : 0; gl.uniform2f(uOffset, o, o * 1.4);
+        gl.drawElements(gl.TRIANGLES, f.count, gl.UNSIGNED_SHORT, 0);
+      }
+    }
+  }
+
+  let t0 = performance.now() / 1000, clock = 0, prev = 0, running = true;
+  function frame(now){
+    const t = now / 1000 - t0;
+    const dt = Math.min(t - prev, 1 / 20); prev = t; clock = t;
+    if (running){ fish.forEach(f => updateFish(f, t, dt)); render(t); }
+    requestAnimationFrame(frame);
+  }
+  document.addEventListener('visibilitychange', () => { running = !document.hidden; prev = performance.now() / 1000 - t0; });
+
+  // mouvement réduit : une seule image, poissons immobiles, pas d'ondes
+  function still(){ for (let k = 0; k < 240; k++) fish.forEach(f => updateFish(f, k / 60, 1 / 60)); drops.fill(0); render(8); }
+
+  /* ---------- Démarrage : police et images chargées d'abord ---------- */
+  const loadImg = src => new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = src; });
+  Promise.all([document.fonts.load('400 200px BROKEN').catch(() => {}), ...SPECIES.map(s => loadImg(s.src))]).then(([, ...imgs]) => {
+    imgs.forEach((im, i) => { fish[i].tex = texture(im, true); });
+    resize();
+    window.addEventListener('resize', () => { clearTimeout(window.__rz); window.__rz = setTimeout(() => { resize(); if (reduce) still(); }, 120); });
+    if (reduce){ still(); return; }
+    if (location.search.includes('test')){     // mode test : simulation à pas fixe, rendu à la demande
+      let simT = 0;
+      window.__koi = sec => { for (let k = 0; k < sec * 60; k++){ simT += 1 / 60; fish.forEach(f => updateFish(f, simT, 1 / 60)); } render(simT); };
+      return;
+    }
+    requestAnimationFrame(frame);
+  }).catch(() => { document.documentElement.classList.remove('gl'); });
+})();
+</script>
+</body>
+</html>
