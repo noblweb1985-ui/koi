@@ -187,7 +187,7 @@ canvas{ position:absolute; inset:0; width:100%; height:100%; display:block }
 
   // Colonne vertébrale mesurée sur chaque image (pixels de l'image, de la bouche à la queue)
   const SPECIES = [
-    { src:'assets/koi-white.webp', w:1024, h:1220, half:250, scale:0.40,
+    { src:'assets/koi-white.webp', w:1024, h:1220, half:330, scale:0.40,   // les nageoires vont jusqu'à 310 px de la colonne
       spine:[[48,92],[150,150],[300,240],[450,322],[580,420],[690,520],[780,620],[840,730],[862,830],[872,930],[890,1050],[918,1150]] },
     { src:'assets/koi-orange.webp', w:640, h:640, half:205, scale:0.44,
       spine:[[172,598],[210,510],[260,430],[320,342],[380,270],[428,210],[460,160],[478,100],[482,18]] },
@@ -282,6 +282,7 @@ canvas{ position:absolute; inset:0; width:100%; height:100%; display:block }
   }
 
   /* ---------- 4. Les ondes : anneaux nés derrière chaque koï ---------- */
+  const RIPPLE = 0.8;                         // intensité des ondes (1 = version d'origine)
   const drops = new Float32Array(MAX_DROPS * 4);
   let dropSlot = 0;
   function drop(x, y, t, amp){ const k = (dropSlot++ % MAX_DROPS) * 4; drops[k] = x; drops[k+1] = y; drops[k+2] = t; drops[k+3] = amp; }
@@ -314,12 +315,12 @@ canvas{ position:absolute; inset:0; width:100%; height:100%; display:block }
         f.pos[k] = bx + nrm[j][0] * u * half; f.pos[k + 1] = by + nrm[j][1] * u * half;
       }
     }
-    // une onde toutes les ~0,14 s, née derrière le corps
+    // une onde toutes les ~0,14 s, née au milieu du corps
     f.emitT -= dt;
     if (f.emitT <= 0){
       f.emitT = 0.14 + Math.random() * 0.06;
-      const p = along(f.trail, L * 0.72);
-      drop(p[0] + (Math.random() - .5) * 6, p[1] + (Math.random() - .5) * 6, t, 0.55 + Math.min(f.speed / 120, 1) * 0.45);
+      const p = along(f.trail, L * 0.5);
+      drop(p[0] + (Math.random() - .5) * 6, p[1] + (Math.random() - .5) * 6, t, RIPPLE * (0.55 + Math.min(f.speed / 120, 1) * 0.45));
     }
   }
 
@@ -329,7 +330,7 @@ canvas{ position:absolute; inset:0; width:100%; height:100%; display:block }
     if (reduce) return;
     const now = performance.now() / 1000 - t0;
     if (now - lastPointer < 0.09) return; lastPointer = now;
-    const r = hero.getBoundingClientRect(); drop(e.clientX - r.left, e.clientY - r.top, now, 0.5);
+    const r = hero.getBoundingClientRect(); drop(e.clientX - r.left, e.clientY - r.top, now, RIPPLE * 0.5);
   });
 
   /* ---------- 5. Boucle de rendu ---------- */
